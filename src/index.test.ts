@@ -8,13 +8,61 @@ describe('toolExecuteBefore', () => {
   let toolExecuteBefore: Awaited<
       ReturnType<typeof SnipPlugin>
   >['tool.execute.before'];
+  const originalSnipMode = process.env.OPENCODE_SNIP_MODE;
+  const originalSnipDisabled = process.env.OPENCODE_SNIP_DISABLED;
 
   beforeEach(async () => {
+    process.env.OPENCODE_SNIP_MODE = originalSnipMode;
+    process.env.OPENCODE_SNIP_DISABLED = originalSnipDisabled;
+
     mockInput = { tool: 'bash', sessionID: 's', callID: 'c' };
     mockOutput = { args: { command: '' } };
 
     plugin = await SnipPlugin();
     toolExecuteBefore = plugin['tool.execute.before'];
+  });
+
+  it('should default to balanced mode', async () => {
+    delete process.env.OPENCODE_SNIP_MODE;
+
+    plugin = await SnipPlugin();
+    toolExecuteBefore = plugin['tool.execute.before'];
+    mockOutput.args.command = 'git log';
+
+    await toolExecuteBefore(mockInput, mockOutput);
+
+    expect(mockOutput.args.command).toBe('snip git log');
+  });
+
+  it('should wrap only high-value commands in conservative mode', async () => {
+    process.env.OPENCODE_SNIP_MODE = 'conservative';
+
+    plugin = await SnipPlugin();
+    toolExecuteBefore = plugin['tool.execute.before'];
+
+    mockOutput.args.command = 'git log';
+
+    await toolExecuteBefore(mockInput, mockOutput);
+
+    expect(mockOutput.args.command).toBe('snip git log');
+
+    mockOutput.args.command = 'echo hello';
+
+    await toolExecuteBefore(mockInput, mockOutput);
+
+    expect(mockOutput.args.command).toBe('echo hello');
+  });
+
+  it('should keep broad wrapping in aggressive mode', async () => {
+    process.env.OPENCODE_SNIP_MODE = 'aggressive';
+
+    plugin = await SnipPlugin();
+    toolExecuteBefore = plugin['tool.execute.before'];
+    mockOutput.args.command = 'echo hello';
+
+    await toolExecuteBefore(mockInput, mockOutput);
+
+    expect(mockOutput.args.command).toBe('snip echo hello');
   });
 
   it('should prefix simple command with snip', async () => {

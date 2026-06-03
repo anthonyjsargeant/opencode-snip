@@ -1,4 +1,4 @@
-const MODE = (process.env.OPENCODE_SNIP_MODE ?? 'conservative').toLowerCase();
+const MODE = (process.env.OPENCODE_SNIP_MODE ?? 'balanced').toLowerCase();
 const DISABLED =
     process.env.OPENCODE_SNIP_DISABLED === 'true' || MODE === 'off';
 
@@ -60,9 +60,10 @@ function isEnvAssignment(token: string): boolean {
 }
 
 function normalizeMode(): 'conservative' | 'balanced' | 'aggressive' {
+    if (MODE === 'conservative') return 'conservative';
     if (MODE === 'balanced') return 'balanced';
     if (MODE === 'aggressive') return 'aggressive';
-    return 'conservative';
+    return 'balanced';
 }
 
 function parseLeadingEnvAndCommand(segment: string): {
@@ -108,6 +109,10 @@ function shouldWrapSingleCommand(segment: string): boolean {
     const {commandToken, trimmed} = parseLeadingEnvAndCommand(segment);
 
     if (!trimmed || !commandToken) return false;
+
+    if (normalizeMode() === 'conservative' && !HIGH_VALUE_COMMANDS.has(commandToken)) {
+        return false;
+    }
 
     // Idempotency
     if (trimmed.startsWith('snip ')) return false;
