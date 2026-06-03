@@ -1,4 +1,6 @@
-const DISABLED = process.env.OPENCODE_SNIP_DISABLED === 'true';
+const MODE = (process.env.OPENCODE_SNIP_MODE ?? 'conservative').toLowerCase();
+const DISABLED =
+    process.env.OPENCODE_SNIP_DISABLED === 'true' || MODE === 'off';
 
 const BUILTIN_DENYLIST = new Set([
   'cd',
@@ -7,15 +9,122 @@ const BUILTIN_DENYLIST = new Set([
   'export',
   'alias',
   'unset',
+  'if',
+  'then',
+  'fi',
+  'for',
+  'while',
+  'case',
+  'do',
+  'done',
+  'function',
+  'eval',
+  'exec',
+  'trap',
+]);
+
+const ALWAYS_SKIP_COMMANDS = new Set([
+  'date',
+  'mktemp',
+  'printf',
+  '[',
+  '[[',
+]);
+
+const HIGH_VALUE_COMMANDS = new Set([
+  'go',
+  'cargo',
+  'pytest',
+  'jest',
+  'vitest',
+  'npm',
+  'pnpm',
+  'yarn',
+  'git',
+  'kubectl',
+  'terraform',
+  'helm',
+  'docker',
+  'find',
+  'grep',
+  'rg',
 ]);
 
 type SplitPart = {
-  type: 'segment' | 'delimiter'
-  value: string
-}
+  type: 'segment' | 'delimiter';
+  value: string;
+};
 
 function isEnvAssignment(token: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=.+$/.test(token);
+}
+
+function normalizeMode(): 'conservative' | 'balanced' | 'aggressive' {
+  if (MODE === 'balanced') return 'balanced';
+  if (MODE === 'aggressive') return 'aggressive';
+  return 'conservative';
+}
+
+function parseLeadingEnvAndCommand(segment: string): {
+  envTokens: string[];
+  commandToken: string | null;
+  trimmed: string;
+} {
+  const trimmed = segment.trim();
+  if (!trimmed) {
+    return { envTokens: [], commandToken: null, trimmed };
+  }
+
+  const tokens = trimmed.split(/\s+/);
+  const envTokens: string[] = [];
+
+  let i = 0;
+  while (i < tokens.length && isEnvAssignment(tokens[i])) {
+    envTokens.push(tokens[i]);
+    i++;
+  }
+
+  return {
+    envTokens,
+    commandToken: tokens[i] ?? null,
+    trimmed,
+  };
+}
+
+function isDangerousShellContext(trimmed: string): boolean {
+  // Command substitution / backticks
+  if (trimmed.includes('$(') || trimmed.includes('`')) return true;
+
+  // Heredocs / here strings / process substitution
+  if (trimmed.includes('<<') || trimmed.includes('<<<')) return true;
+  if (trimmed.includes('<(') || trimmed.includes('>(')) return true;
+
+  return false;
+}
+
+function shouldWrapSingleCommand(segment: string): boolean {
+  if (DISABLED) return false;
+
+  const { commandToken, trimmed } = parseLeadingEnvAndCommand(segment);
+
+  if (!trimmed || !commandToken) return false;
+
+  // Idempotency
+  if (trimmed.startsWith('snip ')) return false;
+
+  // Unsafe shell contexts that can break agent workflows
+  if (isDangerousShellContext(trimmed)) return false;
+
+  // Builtins / shell-only forms
+  if (BUILTIN_DENYLIST.has(commandToken)) return false;
+
+  // Commands known to break orchestration / handoff flows
+  if (commandToken === 'date') return false;
+  if (commandToken === 'mktemp') return false;
+  if (commandToken === 'printf') return false;
+
+  // Otherwise wrap
+  return true;
 }
 
 function insertSnipIntoSingleCommand(segment: string): string {
@@ -32,39 +141,31 @@ function insertSnipIntoSingleCommand(segment: string): string {
     return segment;
   }
 
-  // Preserve original whitespace/newlines by parsing from the raw core string
+  if (!shouldWrapSingleCommand(segment)) {
+    return segment;
+  }
+
   let i = 0;
   const len = core.length;
 
-  // skip internal leading whitespace (already captured in leadingWs for most cases,
-  // but keep this defensive)
   while (i < len && /\s/.test(core[i])) i++;
-
-  const envRanges: string[] = [];
 
   while (i < len) {
     const start = i;
 
-    // read token until whitespace
     while (i < len && !/\s/.test(core[i])) i++;
     const token = core.slice(start, i);
 
     if (isEnvAssignment(token)) {
-      envRanges.push(token);
-
-      // preserve the exact whitespace after each env assignment
-      const wsStart = i;
       while (i < len && /\s/.test(core[i])) i++;
-      envRanges.push(core.slice(wsStart, i));
       continue;
     }
 
-    // first non-env token = command
     const cmdStart = start;
     const cmdEnd = i;
     const commandToken = core.slice(cmdStart, cmdEnd);
 
-    if (BUILTIN_DENYLIST.has(commandToken)) {
+    if (BUILTIN_DENYLIST.has(commandToken) || ALWAYS_SKIP_COMMANDS.has(commandToken)) {
       return segment;
     }
 
@@ -106,7 +207,6 @@ function splitTopLevel(command: string): SplitPart[] {
     const ch = command[i];
     const next = command[i + 1] ?? '';
 
-    // quote tracking
     if (!inDouble && ch === '\'') {
       inSingle = !inSingle;
       buf += ch;
@@ -122,8 +222,7 @@ function splitTopLevel(command: string): SplitPart[] {
     }
 
     if (!inSingle && !inDouble) {
-      // 1) escaped blank line: "\\\n\\\n"
-      //    Split HERE so the second command gets its own snip prefix.
+      // escaped blank line: "\\\n\\\n"
       if (
           ch === '\\' &&
           next === '\n' &&
@@ -139,7 +238,6 @@ function splitTopLevel(command: string): SplitPart[] {
         continue;
       }
 
-      // 2) &&
       if (ch === '&' && next === '&') {
         pushBuf();
         parts.push({ type: 'delimiter', value: '&&' });
@@ -147,7 +245,6 @@ function splitTopLevel(command: string): SplitPart[] {
         continue;
       }
 
-      // 3) plain blank line: \n[spaces/tabs]*\n
       if (ch === '\n') {
         let j = i + 1;
         while (j < command.length && (command[j] === ' ' || command[j] === '\t')) {
@@ -161,7 +258,6 @@ function splitTopLevel(command: string): SplitPart[] {
         }
       }
 
-      // 4) ;
       if (ch === ';') {
         pushBuf();
         parts.push({ type: 'delimiter', value: ';' });
@@ -169,7 +265,6 @@ function splitTopLevel(command: string): SplitPart[] {
         continue;
       }
 
-      // 5) single &
       if (ch === '&') {
         pushBuf();
         parts.push({ type: 'delimiter', value: '&' });
@@ -186,17 +281,13 @@ function splitTopLevel(command: string): SplitPart[] {
   return parts;
 }
 
-
 function wrapCommand(command: string): string {
   const parts = splitTopLevel(command);
 
   return parts
       .map((part) => {
         if (part.type === 'delimiter') return part.value;
-
-        // If a segment is only whitespace, leave it alone.
         if (!part.value.trim()) return part.value;
-
         return insertSnipIntoSingleCommand(part.value);
       })
       .join('');
