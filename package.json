@@ -2,8 +2,11 @@
   "name": "opencode-snip",
   "description": "OpenCode plugin that prefixes shell commands with snip to reduce LLM token consumption",
   "type": "module",
-  "main": ".opencode/plugins/index.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "eslint ."
@@ -41,8 +44,8 @@
     "node": "^24"
   },
   "files": [
-    ".opencode",
-    "src"
+    ".opencode/plugins",
+    "dist"
   ],
   "release": {
     "branches": [
@@ -54,5 +57,11 @@
       "@semantic-release/npm",
       "@semantic-release/github"
     ]
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
   }
 }
