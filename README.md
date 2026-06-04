@@ -1,49 +1,105 @@
 # opencode-snip
 
-OpenCode plugin that automatically prefixes shell commands with [snip](https://github.com/edouard-claude/snip) to reduce LLM token consumption by 60-90%.
+OpenCode plugin that prefixes eligible `bash` commands with [`snip`](https://github.com/edouard-claude/snip) before execution.
 
-## What is snip?
+## What it does
 
-[snip](https://github.com/edouard-claude/snip) is a CLI proxy that filters shell output before it reaches your LLM context window.
-
-| Command | Before | After | Savings |
-|---------|--------|-------|---------|
-| `go test ./...` | 689 tokens | 16 tokens | 97.7% |
-| `git log` | 371 tokens | 53 tokens | 85.7% |
-| `cargo test` | 591 tokens | 5 tokens | 99.2% |
+- Hooks `tool.execute.before` for `bash` commands.
+- Prefixes eligible commands with `snip`.
+- Leaves commands unchanged when wrapping is disabled or unsafe.
 
 ## Installation
 
-### 1. Install snip
+This repository is not published to npm.
+
+### 1. Clone the repo and install dependencies
 
 ```bash
-brew install edouard-claude/tap/snip
-# or
-go install github.com/edouard-claude/snip/cmd/snip@latest
+git clone https://github.com/anthonyjsargeant/opencode-snip.git
+cd opencode-snip
+npm ci
+npm run build
 ```
 
-### 2. Configure OpenCode
+### 2. Point OpenCode at the local plugin entrypoint
 
-Add the plugin to your OpenCode config (`~/.config/opencode/opencode.json`):
+Add the plugin to your `opencode.json` file:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-snip@latest"]
+  "plugin": ["opencode-snip"]
 }
 ```
 
-## How It Works
+Then create a symlink from OpenCode's plugin directory:
 
-The plugin uses the `tool.execute.before` hook to prefix all commands with `snip`
+```bash
+mkdir -p ~/.config/opencode/plugins
+ln -s /path/to/opencode-snip/.opencode/plugins/index.ts ~/.config/opencode/plugins/opencode-snip.ts
+```
+
+## Configuration
+
+- `OPENCODE_SNIP_MODE=off`: disable wrapping
+- `OPENCODE_SNIP_MODE=conservative`: only wrap high-value commands
+- `OPENCODE_SNIP_MODE=balanced`: default behavior
+- `OPENCODE_SNIP_MODE=aggressive`: currently behaves like `balanced`
+- `OPENCODE_SNIP_DISABLED=true`: disable wrapping
+
+## Behavior
+
+The plugin wraps each eligible top-level command segment separately. It splits on `&&`, `;`, `&`, and blank lines, but not on pipes, single newlines, or quoted text.
+
+It skips commands already prefixed with `snip`, shell builtins, unsafe shell contexts, and command tokens like `date`, `mktemp`, `printf`, `[`, and `[[`.
+
+Environment assignments before the command are preserved:
+
+```bash
+FOO=bar npm test
+```
+
+becomes:
+
+```bash
+FOO=bar snip npm test
+```
+
+### Conservative mode
+
+`OPENCODE_SNIP_MODE=conservative` only wraps commands whose first token is in the high-value list, including:
+
+- `go`
+- `cargo`
+- `pytest`
+- `jest`
+- `vitest`
+- `npm`
+- `pnpm`
+- `yarn`
+- `git`
+- `kubectl`
+- `terraform`
+- `helm`
+- `docker`
+- `find`
+- `grep`
+- `rg`
+
+## Notes
+
+- If wrapping fails, the plugin leaves the original command unchanged.
+- `balanced` is the default mode, and `aggressive` currently behaves the same way.
 
 ## Development
 
-This package uses [semantic-release](https://semantic-release.gitbook.io/) for automated releases. Commit messages should follow the [Conventional Commits](https://www.conventionalcommits.org/) format:
-
-- `fix:` → patch release
-- `feat:` → minor release
-- `feat!:`, `fix!:` → major release
+```bash
+npm ci
+npm run build
+npm run typecheck
+npm test
+npm run lint
+```
 
 ## License
 
